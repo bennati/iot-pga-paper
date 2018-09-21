@@ -7,16 +7,6 @@ import functools
 #import random
 from tools import *
 
-# data_dir="test"
-# compression_levels=[10,10,10]
-# num_intervals=20
-# num_rep=2
-# min_user=1000
-# max_user=1010
-# group_fraction=1
-# grp_size_distr=None
-# input_dir="./datasets/ecbt/run_48/output/daily/users/cluster48/"
-
 parser = argparse.ArgumentParser(description='reads in parameters')
 
 # Add the arguments for the parser to be passed on the cmd-line
@@ -35,9 +25,9 @@ parser.add_argument('--grp_size_distr', metavar='grp_size_distr', nargs='?',defa
 args = parser.parse_args()
 
 def main(data_dir,compression_levels,num_intervals,num_rep,min_user,max_user,group_fraction,grp_size_distr):
-    #analysis_ecbt(**locals())
+    analysis_ecbt(**locals())
     #analysis_nrel(**locals())
-    exp_clustering_ecbt(**locals())
+    #exp_clustering_ecbt(**locals())
 
 def random_summarization_fct():
     np.random.seed()
@@ -46,42 +36,63 @@ def random_summarization_fct():
 def exp_clustering_ecbt(data_dir,compression_levels,num_intervals,num_rep,min_user,max_user,group_fraction,grp_size_distr):
     num_groups=compression_levels[0]
     print "Grouping users in "+str(num_groups)+" clusters"
-    input_dir="../results_ecbt/datasets/ecbt/run_48/output/daily/users/cluster48/"
+    input_dir="./datasets/ecbt/run_48/output/daily/users/cluster48/"
     files=select_files(input_dir,range(min_user,max_user+1))
     max_std=13
     part_fun=functools.partial(exp_clustering_std,data_dir=data_dir,files=files,num_groups=num_groups,input_dir=input_dir,max_std=max_std)
-    # if __name__ == '__main__':
-    #     pool=Pool()
-    #     print "starting processes"
-    #     ans=pool.map(part_fun,range(num_rep))
-    #     pool.close()
-    #     pool.join()
-    # else:
-    #     ans=map(part_fun,range(num_rep))
-    ans=map(part_fun,range(num_rep))
+    if __name__ == '__main__':
+        pool=Pool()
+        print "starting processes"
+        ans=pool.map(part_fun,range(num_rep))
+        pool.close()
+        pool.join()
+    else:
+        ans=map(part_fun,range(num_rep))
     hist=pd.concat(ans)
-    hist.to_csv(os.path.join(data_dir,"distrib_group_size_"+str(num_groups)+".csv"),sep=",",index=True,compression="bz2")
+    hist.to_csv(os.path.join(data_dir,"distrib_group_size_"+str(num_groups)+".csv"),sep=",",index=True)
     ## aggregate results from different simulations
-    for fct in ["cl_data","cl_sum","cl_rnd"]:
-        for s in range(max_std):
-            partial_data=pd.DataFrame()
-            filename="exp_clustering_"+str(num_groups)+"_fct_"+str(fct)+"_std_"+str(s)
-            for i in range(num_rep):
-                try:
-                    df=pd.read_csv(os.path.join(data_dir,"indiv","daily_"+filename+"_rep_"+str(i)+".csv.bz2"),compression="bz2")
-                    if not df.empty:
-                        partial_data=pd.concat([partial_data,df])
-                    else:
-                        print "File "+"daily_"+filename+"_rep_"+str(i)+" is empty"
-                except:
-                    print "Skipping file daily_"+filename+"_rep_"+str(i)+": not found"
-            if not partial_data.empty:
-                partial_data=average_data([partial_data],compute_stds=True)
-                partial_data.to_csv(os.path.join(data_dir,"indiv","daily_"+filename+".csv.bz2"),index=False,compression="bz2")
-                aggregated=aggregate_daily(partial_data)
-                aggregated.to_csv(os.path.join(data_dir,"indiv","aggregated_"+filename+".csv.bz2"),index=False,compression="bz2")
-            else:
-                print "Skipping "+filename
+    for ng in [1,10,20,40,60]: #[num_groups]      # debug
+        for fct in ["cl_data","cl_sum","cl_rnd"]:
+            for s in range(max_std):
+                partial_data=pd.DataFrame()
+                partial_stats=pd.DataFrame()
+                filename="exp_clustering_"+str(ng)+"_fct_"+str(fct)+"_std_"+str(s)
+                for i in range(num_rep):
+                    try:
+                        df=pd.read_csv(os.path.join(data_dir,"daily_"+filename+"_rep_"+str(i)+".csv.gz"),compression='gzip')
+                        if not df.empty:
+                            partial_data=pd.concat([partial_data,df])
+                        else:
+                            print "File "+"daily_"+filename+"_rep_"+str(i)+" is empty"
+                    except:
+                        print "Skipping file daily_"+filename+"_rep_"+str(i)+": not found"
+                    try:
+                        group_stats=pd.read_csv(os.path.join(data_dir,"group_stats_"+filename+"_rep_"+str(i)+".csv"))
+                        if not group_stats.empty:
+                            partial_stats=pd.concat([partial_stats,group_stats])
+                        else:
+                            print "File "+"group_stats_"+filename+"_rep_"+str(i)+" is empty"
+                    except:
+                        print "Skipping file group_stats_"+filename+"_rep_"+str(i)+": not found"
+                if not partial_data.empty:
+                    partial_data=average_data([partial_data],compute_stds=True)
+                    partial_data.to_csv(os.path.join(data_dir,"daily_"+filename+".csv.gz"),index=False,compression='gzip')
+                    aggregated=aggregate_daily(partial_data)
+                    aggregated.to_csv(os.path.join(data_dir,"aggregated_"+filename+".csv.gz"),index=False,compression='gzip')
+                if not partial_stats.empty:
+                    if "Unnamed: 0" in partial_stats.columns:
+                        partial_stats=partial_stats.drop(["Unnamed: 0"],1)
+                    cols=partial_stats.columns != "Compression"
+                    ## select rows where at least one element is not nan
+                    partial_stats['COUNTER']=[0 if i else 1 for i in partial_stats.ix[:,cols].isnull().all(axis=1)]
+                    partial_stats=partial_stats.groupby(["Compression"], as_index=False).sum()
+                    not_nan_rows=~partial_stats.ix[:,cols].isnull().all(axis=1)
+                    cols=partial_stats.columns != "Compression" # now consider also the new column COUNTER
+                    partial_stats.ix[not_nan_rows,cols]=partial_stats.ix[not_nan_rows,cols].div(partial_stats.ix[not_nan_rows,"COUNTER"], axis='index')
+                    partial_stats.to_csv(os.path.join(data_dir,"group_stats_"+filename+".csv"),index=False)
+                else:
+                    print "Skipping "+filename
+
 
 def analysis_ecbt(data_dir,compression_levels,num_intervals,num_rep,min_user,max_user,group_fraction,grp_size_distr):
     input_dir="./datasets/ecbt/run_48/output/daily/users/cluster48/"
@@ -155,6 +166,9 @@ def body(data_dir,files,compression_levels,num_intervals,num_rep,group_fraction,
     hist=[pd.DataFrame(np.asarray(a).T,columns=["size","count"]) for a in partial_hist]
     hist=pd.concat(hist).groupby(["size"],as_index=False).mean()
     hist.to_csv(os.path.join(data_dir,"group_size_hist_"+filename),sep=",",index=False)
+    glens=[a[1].sum() for a in partial_hist]     # compute avg num of groups
+    glens=pd.DataFrame(glens)
+    glens.to_csv(os.path.join(data_dir,"group_sizes_"+filename),sep=",",index=False)
     dailys=average_data([partial_data],counter=True,compute_stds=True)
     dailys.to_csv(os.path.join(data_dir,"daily_"+filename),sep=",",index=False)
     ## aggregate by day
@@ -219,9 +233,25 @@ def update_compression_levels(old,last_std,max_compr=46,min_compr=4):
     return ret,last_std
 
 def group_clustering_data(t,tbl):
+    """
+    Group the users according to the similarity in their raw data.
+
+    Args:
+    t: the column containing the group labels (usually for an epoch) computed on the similarity of the raw data
+    tbl: the table with the users
+    """
     return list(tbl[[t]].groupby(by=t,as_index=False).apply(lambda x: list(x.index))) # group users according to their group id
 
 def group_clustering_summ(t,k,tbl,std):
+    """
+    Group the users according to the summarization value: start with a uniform summarization value for every agent and modify them in order to increase the standard deviation.
+
+    Args:
+    t: the epoch: it is not used as the summarization values are constant for the whole simulation
+    k: the number of groups
+    tbl: the table with the users
+    std: the value of the standard deviation of the summarization values.
+    """
     ret=tbl[[str(std)]].copy()
     ret.iloc[np.random.permutation(len(ret))] # shuffle rows
     classifier=KMeans(n_clusters=k) # create classifier
@@ -229,6 +259,14 @@ def group_clustering_summ(t,k,tbl,std):
     return group_clustering_data("labels",ret)
 
 def group_randomly(t,k,tbl):
+    """
+    Group the indexes of tbl randomly in k groups of equal size
+
+    Args:
+    t: the current epoch
+    k: the number of groups
+    tbl: the table with the users
+    """
     ret=np.asarray(tbl.index)
     np.random.shuffle(ret)
     return [ret[i::k] for i in range(k)]
@@ -240,7 +278,7 @@ def exp_clustering_std(n,data_dir,files,num_groups,input_dir,start_compression=1
     groups_tbl,hist,user_data=cluster_users(files,num_groups) # user_data contains the data of each user in files
     #groups_tbl=groups_tbl.ix[:,:205]
     print "Done"
-    compr_tbl=pd.DataFrame({"0":start_compression},index=files)
+    compr_tbl=pd.DataFrame({"0":start_compression},index=groups_tbl.index)
     new_std=0                       # init
     for std in range(max_std):
         print "Thread "+str(n)+" processing std "+str(std)
@@ -254,6 +292,10 @@ def exp_clustering_std(n,data_dir,files,num_groups,input_dir,start_compression=1
             # fcts=[["cl_data",functools.partial(group_clustering_data,tbl=groups_tbl)]]
             for name,fct in fcts:
                 print "Thread "+str(n)+" is executing function "+str(name)
+                partial_errors=[pd.DataFrame() for _ in range(49)]
+                partial_group_errors=[pd.DataFrame() for _ in range(49)]
+                partial_corrs=[pd.DataFrame() for _ in range(49)]
+                partial_group_corrs=[pd.DataFrame() for _ in range(49)]
                 filename="exp_clustering_"+str(num_groups)+"_fct_"+str(name)+"_std_"+str(std)+"_rep_"+str(n)+".csv"
                 dailys=pd.DataFrame()
                 for i in range(len(groups_tbl.columns)): # for each epoch
@@ -272,6 +314,7 @@ def exp_clustering_std(n,data_dir,files,num_groups,input_dir,start_compression=1
                                                    cl_tbl=compr_tbl)
                         ans=map(part_fun,current_measurements)                       # process every group separatedly
                         epoch,errors,g_errors,corrs,g_corrs=zip(*ans) # the data for each group
+                        errors,g_errors,corrs,g_corrs=[[average_data(i,compute_stds=True) for i in e] for e in [errors,g_errors,corrs,g_corrs]] # one dataframe for each compression level
                         epoch=[d for d in epoch if not d.empty] # remove empty tables
                         for d in epoch:
                             assert("COUNTER" in d)
@@ -280,11 +323,29 @@ def exp_clustering_std(n,data_dir,files,num_groups,input_dir,start_compression=1
                         epoch['GLOBAL_ERROR']=compute_error(epoch)      # compute the global error
                         epoch['GLOBAL_CORR']=compute_correlation(epoch)      # compute the global correlation
                         dailys=pd.concat([dailys,epoch])
+                        # compute the group-level errors
+                        avg_group_summ=[int(np.mean([int(compr_tbl.loc[compr_tbl.index==i,str(std)]) for i in g])) for g in user_groups]
+                        for a,e,ge,c,gc in zip(avg_group_summ,errors,g_errors,corrs,g_corrs): # update array
+                            partial_errors[a]=(e if partial_errors[a].empty else sum_data([partial_errors[a],e]))
+                            partial_group_errors[a]=(ge if partial_group_errors[a].empty else sum_data([partial_group_errors[a],ge]))
+                            partial_corrs[a]=(c if partial_corrs[a].empty else sum_data([partial_corrs[a],c]))
+                            partial_group_corrs[a]=(gc if partial_group_corrs[a].empty else sum_data([partial_group_corrs[a],gc]))
                 ## after processing all timesteps
-                dailys.to_csv(os.path.join(data_dir,"daily_"+filename+".bz2"),sep=",",index=False,compression="bz2")
+                dailys.to_csv(os.path.join(data_dir,"daily_"+filename+".gz"),sep=",",index=False,compression='gzip')
                 ## aggregate by day
                 aggregated=aggregate_daily(dailys)
-                aggregated.to_csv(os.path.join(data_dir,"aggregated_"+filename+".bz2"),sep=",",index=False,compression="bz2")
+                aggregated.to_csv(os.path.join(data_dir,"aggregated_"+filename+".gz"),sep=",",index=False,compression='gzip')
+                ## print the group-level errors
+                group_stats=pd.DataFrame({"Compression":range(49)})
+                for tbl,i_col,o_col in [[partial_errors,'ERROR','Error'],
+                                        [partial_group_errors,'GROUP_ERROR','Group_Error'],
+                                        [partial_corrs,'CORR','Correlation'],
+                                        [partial_group_corrs,'GROUP_CORR','Group_Correlation']]:
+                    temp=[[np.nan,np.nan] if d.empty else [average_data([d]).mean()[i_col],average_data([d]).mean()[i_col+"_STD"]] for d in tbl]
+                    temp=pd.DataFrame(temp,columns=[o_col,o_col+"_std"])
+                    temp['Compression']=temp.index
+                    group_stats=group_stats.merge(temp)
+                group_stats.to_csv(os.path.join(data_dir,"group_stats_"+filename),sep=",",index=False)
             ## update the compression levels
             compr_tbl,new_std=update_compression_levels(compr_tbl,std) # update the compression levels for this iteration
         else:
@@ -402,16 +463,7 @@ def generate_daily_data_clustering(measurements,cl_tbl):
     measurements: A list containing user data.
     cl_tbl: A table containing the compression level for each file
     """
-    loc_errors=[pd.DataFrame() for _ in range(len(measurements))]
-    group_errors=[pd.DataFrame() for _ in range(len(measurements))]
-    loc_corrs=[pd.DataFrame() for _ in range(len(measurements))]
-    group_corrs=[pd.DataFrame() for _ in range(len(measurements))]
-    data=pd.DataFrame()
-    # for i in range(len(measurements)):
-    #     m=measurements[i]
     levs=[int(cl_tbl.loc[cl_tbl.index==i.index.name].values[0][0]) for i in measurements]
-        #user_data,errors,g_errors,corrs,g_corrs=process_group(m,levs)
-        #n=len(levs)
     user_data,errors,g_errors,corrs,g_corrs=process_group(measurements,levs)
     if not user_data.empty:
         return (user_data,errors,g_errors,corrs,g_corrs)
@@ -449,9 +501,9 @@ def test_nonuniform_groups_parallel_body(group_sizes,num_rep=1,min_user=3000,max
         print "Error, dataframe is empty"
         print e.value
         tot_data=pd.DataFrame()
-    #tot_data.to_csv(os.path.join(data_dir,"daily_"+filename),sep=",",index=False,compression="bz2")
+    #tot_data.to_csv(os.path.join(data_dir,"daily_"+filename),sep=",",index=False,compression='gzip')
     aggregated=aggregate_daily(tot_data)
-    #aggregated.to_csv(os.path.join(data_dir,"aggregated_"+filename),sep=",",index=False,compression="bz2")
+    #aggregated.to_csv(os.path.join(data_dir,"aggregated_"+filename),sep=",",index=False,compression='gzip')
     return aggregated["ERROR"].mean(),aggregated["GLOBAL_ERROR"].mean(),aggregated["CORR"].mean(),aggregated["GLOBAL_CORR"].mean()
 
 def test_nonuniform_groups():
